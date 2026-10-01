@@ -284,9 +284,11 @@
    JSZip is required: cell-comment images live inside the .xlsx's VML
    drawing part, which ExcelJS does NOT expose through its public API.
    ============================================================================ */
-const OPENCV_URL  = 'https://docs.opencv.org/4.10.0/opencv.js';
-const EXCELJS_URL = 'https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js';
-const JSZIP_URL   = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
+// Each entry is tried in order: bundled copy first (works offline inside the
+// Android app), CDN second (works when opened as a plain web page).
+const OPENCV_URL  = ['libs/opencv.js',      'https://docs.opencv.org/4.10.0/opencv.js'];
+const EXCELJS_URL = ['libs/exceljs.min.js', 'https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js'];
+const JSZIP_URL   = ['libs/jszip.min.js',   'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js'];
 
 /* ============================================================================
    DOM
@@ -337,7 +339,7 @@ function setBusy(state, label) {
   btnMatch.textContent = state ? (label || 'Working…') : BTN_MATCH_LABEL;
 }
 
-function loadScript(src) {
+function loadOneScript(src) {
   return new Promise((resolve, reject) => {
     const s = document.createElement('script');
     s.src = src; s.async = true;
@@ -345,6 +347,11 @@ function loadScript(src) {
     s.onerror = () => reject(new Error('Could not load ' + src));
     document.head.appendChild(s);
   });
+}
+// Accepts one URL or a list of URLs and tries them in order.
+function loadScript(src) {
+  const list = Array.isArray(src) ? src : [src];
+  return list.reduce((p, url) => p.catch(() => loadOneScript(url)), Promise.reject());
 }
 
 function readFileAsArrayBuffer(file) {
@@ -419,7 +426,7 @@ async function startCamera() {
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
     setBadge('No camera API');
     toast('Camera API unavailable — use the image upload instead.', 'err');
-    return;
+    return false;
   }
   try {
     stream = await navigator.mediaDevices.getUserMedia({
@@ -434,12 +441,14 @@ async function startCamera() {
     video.setAttribute('playsinline', '');
     await video.play().catch(() => {});
     setBadge('Live');
+    return true;
   } catch (err) {
     setBadge('Camera off');
     const msg = (err && err.name === 'NotAllowedError')
       ? 'Camera permission denied. Upload an image instead.'
       : 'Camera error: ' + (err && err.message ? err.message : err);
     toast(msg, 'err');
+    return false;
   }
 }
 function stopCamera() {
@@ -954,8 +963,12 @@ function renderResults(list) {
 /* ============================================================================
    EVENT WIRING
    ============================================================================ */
-btnScan.addEventListener('click', () => {
+btnScan.addEventListener('click', async () => {
   if (busy) return;
+  if (!stream) {   // first tap: ask for camera permission + start the preview
+    if (await startCamera()) toast('Camera ready — tap Scan again to capture.', 'ok');
+    return;
+  }
   try {
     const canvas = grabVideoFrame();
     scanHash = computePHashFromCanvas(canvas);
@@ -1048,14 +1061,16 @@ btnMatch.addEventListener('click', async () => {
    BOOT
    ============================================================================ */
 (function init() {
-  startCamera();
+  setBadge('Tap Scan to start');
   ensureExcelJS().catch((e) => console.warn(e));
   ensureJSZip().catch((e) => console.warn(e));
   ensureOpenCV().catch(() => {});
 })();
 
+let resumeCamera = false;
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) stopCamera();
+  if (document.hidden) { if (stream) { resumeCamera = true; stopCamera(); } }
+  else if (resumeCamera) { resumeCamera = false; startCamera(); }
 });
 window.addEventListener('pagehide', stopCamera);
 
